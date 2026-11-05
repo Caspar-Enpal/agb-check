@@ -37,7 +37,7 @@ import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import pymupdf
 from openpyxl import Workbook
@@ -111,10 +111,16 @@ def sharepoint_link_aufloesen(link: str) -> str:
     Voraussetzung: Der Ordner (oder ein übergeordneter Ordner) ist per OneDrive
     'Synchronisieren' bzw. 'Verknüpfung zu Meine Dateien hinzufügen' eingebunden.
     """
-    pfad = urlparse(link).path
+    url = urlparse(link)
+    query = parse_qs(url.query)
+    # Browser-Ansichtslinks (.../Forms/AllItems.aspx?id=/sites/...) tragen den Ordner im Parameter 'id'.
+    pfad = query["id"][0] if "id" in query else url.path
     # Freigabelinks: /:f:/r/sites/<site>/<bibliothek>/<ordner>/...
     pfad = re.sub(r"^/:[a-z]:/[a-z]/", "/", pfad)
     segmente = [unquote(s) for s in pfad.split("/") if s]
+    # Ansicht einer ganzen Bibliothek: .../<bibliothek>/Forms/AllItems.aspx -> nur <bibliothek>
+    if "Forms" in segmente:
+        segmente = segmente[: segmente.index("Forms")]
     if "sites" in segmente:
         segmente = segmente[segmente.index("sites") + 2:]  # 'sites' und Site-Name weg
     if not segmente:

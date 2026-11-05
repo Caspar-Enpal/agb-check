@@ -18,5 +18,6 @@ Dieses Repo prüft, welcher AGB-Stand (`*_AGB_Stromtarif_Enpal.OnePlus.pdf`) in 
 
 ## Datenschutz
 
-- Excel-Ausgaben (`output/`, `*.xlsx`) enthalten Kundennamen und dürfen nie committet werden.
+- Excel-Ausgaben (`output/`, `*.xlsx`) enthalten Kundennamen und E-Mail-Adressen und dürfen nie committet werden.
+- E-Mail-Adressen nie in den Chat ausgeben. Prüfungen der E-Mail-Spalte nur als Zählungen (gefunden / nicht gefunden).
 - Keine Kundendaten, Ordnernamen oder PDF-Inhalte in Commits, Issues oder Chats außerhalb des Teams.

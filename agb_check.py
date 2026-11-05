@@ -45,8 +45,10 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 AGB_PATTERN = "AGB_Stromtarif"
+AUFTRAG_PATTERN = "Auftrag_Stromtarif"
 STAND_RE = re.compile(r"Stand\s*:?\s*(\d{1,2})\.(\d{1,2})\.(\d{4})")
 KUNDEN_ID_RE = re.compile(r"^(DE\d+)_")
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 STATUS_NEU = "neu"
 STATUS_ALT = "alt"
@@ -68,6 +70,10 @@ class Kunde:
     pfad: str
     agb_dateien: list[AgbDatei] = field(default_factory=list)
     letzte_aenderung_ordner: dt.datetime | None = None
+    auftrag_pfad: str | None = None
+    auftrag_geaendert: dt.datetime | None = None
+    email: str = ""
+    email_hinweis: str = ""
 
     @property
     def aktuelle_agb(self) -> AgbDatei | None:
@@ -167,8 +173,15 @@ def ordner_scannen(root: str) -> list[Kunde]:
                     continue
                 mtime = dt.datetime.fromtimestamp(f.stat().st_mtime)
                 letzte = mtime if letzte is None or mtime > letzte else letzte
-                if AGB_PATTERN.lower() in f.name.lower() and f.name.lower().endswith(".pdf"):
+                name = f.name.lower()
+                if not name.endswith(".pdf"):
+                    continue
+                if AGB_PATTERN.lower() in name:
                     k.agb_dateien.append(AgbDatei(pfad=f.path, name=f.name, geaendert=mtime))
+                elif AUFTRAG_PATTERN.lower() in name:
+                    # Bei mehreren Auftragsdateien zählt die zuletzt geänderte.
+                    if k.auftrag_geaendert is None or mtime > k.auftrag_geaendert:
+                        k.auftrag_pfad, k.auftrag_geaendert = f.path, mtime
         k.letzte_aenderung_ordner = letzte
         kunden.append(k)
     return kunden
@@ -213,6 +226,45 @@ def pruefen(dateien: list[AgbDatei], threads: int) -> None:
             fertig += 1
             if fertig % 100 == 0 or fertig == gesamt:
                 print(f"  {fertig}/{gesamt} PDFs gelesen", flush=True)
+
+
+def email_auslesen(pdf_bytes: bytes) -> str | None:
+    """Kunden-E-Mail aus dem Auftrag: steht oben links auf Seite 1.
+
+    Unten im Fuß steht die Enpal-Adresse, die wird ignoriert.
+    """
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
+        if doc.page_count == 0:
+            return None
+        seite = doc[0]
+        r = seite.rect
+        for clip in (pymupdf.Rect(0, 0, r.width / 2, r.height / 3), None):
+            for m in EMAIL_RE.findall(seite.get_text("text", clip=clip)):
+                if "enpal" not in m.lower().split("@")[-1]:
+                    return m.strip(".")
+    return None
+
+
+def emails_lesen(kunden: list[Kunde], threads: int) -> None:
+    mit_auftrag = [k for k in kunden if k.auftrag_pfad]
+    for k in kunden:
+        if not k.auftrag_pfad:
+            k.email_hinweis = "Keine Auftrag_Stromtarif-Datei im Ordner"
+    gesamt = len(mit_auftrag)
+    fertig = 0
+    with ThreadPoolExecutor(max_workers=threads) as pool:
+        futures = {pool.submit(datei_lesen, k.auftrag_pfad): k for k in mit_auftrag}
+        for fut in as_completed(futures):
+            k = futures[fut]
+            try:
+                k.email = email_auslesen(fut.result()) or ""
+                if not k.email:
+                    k.email_hinweis = "Keine E-Mail im Auftrag gefunden"
+            except Exception as ex:  # noqa: BLE001
+                k.email_hinweis = f"{type(ex).__name__}: {ex}"
+            fertig += 1
+            if fertig % 100 == 0 or fertig == gesamt:
+                print(f"  {fertig}/{gesamt} Aufträge gelesen", flush=True)
 
 
 def status(a: AgbDatei, neue: set[str]) -> str:
@@ -272,8 +324,13 @@ def excel_schreiben(pfad: str, kunden: list[Kunde], args, neue: set[str]) -> dic
         s = status(a, neue)
         zaehler[s] += 1
         alle_staende = ", ".join(sorted({x.stand or "?" for x in k.agb_dateien})) if len(k.agb_dateien) > 1 else ""
-        zeilen.append([k.ordner, k.kunden_id, a.name, a.geaendert, a.stand or "", s,
-                       len(k.agb_dateien), alle_staende, a.fehler or ""])
+        hinweis = "; ".join(h for h in (a.fehler, k.email_hinweis if args.mit_email else "") if h)
+        zeilen.append([k.ordner, k.kunden_id, k.email, a.name, a.geaendert, a.stand or "", s,
+                       len(k.agb_dateien), alle_staende, hinweis])
+    STATUS_SPALTE = 6
+    if not args.mit_email:
+        zeilen = [z[:2] + z[3:] for z in zeilen]
+        STATUS_SPALTE = 5
 
     bewertbar = zaehler[STATUS_NEU] + zaehler[STATUS_ALT]
     quote_neu = zaehler[STATUS_NEU] / bewertbar if bewertbar else 0
@@ -312,8 +369,9 @@ def excel_schreiben(pfad: str, kunden: list[Kunde], args, neue: set[str]) -> dic
     # Verteilung der alten Stände
     alt_staende: dict[str, int] = {}
     for z in zeilen:
-        if z[5] == STATUS_ALT:
-            alt_staende[z[4]] = alt_staende.get(z[4], 0) + 1
+        if z[STATUS_SPALTE] == STATUS_ALT:
+            stand = z[STATUS_SPALTE - 1]
+            alt_staende[stand] = alt_staende.get(stand, 0) + 1
     r = len(info) + 5
     ws.cell(r, 1, "Gefundene alte Stände").font = Font(bold=True)
     for stand, n in sorted(alt_staende.items(), key=lambda x: -x[1]):
@@ -323,22 +381,28 @@ def excel_schreiben(pfad: str, kunden: list[Kunde], args, neue: set[str]) -> dic
     ws.column_dimensions["A"].width = 52
     ws.column_dimensions["B"].width = 60
 
-    kopf = ["Kundenordner", "Kunden-ID", "AGB-Datei", "In SharePoint geändert am",
+    kopf = ["Kundenordner", "Kunden-ID", "E-Mail", "AGB-Datei", "In SharePoint geändert am",
             "AGB-Stand", "Status", "Anzahl AGB-Dateien", "Alle Stände (bei mehreren)", "Hinweis"]
-    tabelle(wb.create_sheet("Kunden geprüft"), kopf, zeilen, status_spalte=5)
-    tabelle(wb.create_sheet("Alte AGB"), kopf, [z for z in zeilen if z[5] == STATUS_ALT], status_spalte=5)
+    if not args.mit_email:
+        kopf.remove("E-Mail")
+    S = STATUS_SPALTE
+    tabelle(wb.create_sheet("Kunden geprüft"), kopf, zeilen, status_spalte=S)
+    tabelle(wb.create_sheet("Alte AGB"), kopf, [z for z in zeilen if z[S] == STATUS_ALT], status_spalte=S)
     if zaehler[STATUS_UNKLAR]:
-        tabelle(wb.create_sheet("Nicht lesbar"), kopf, [z for z in zeilen if z[5] == STATUS_UNKLAR], status_spalte=5)
-    tabelle(
-        wb.create_sheet("Ohne AGB"),
-        ["Kundenordner", "Letzte Änderung im Ordner", "Im Prüfzeitraum"],
-        [[k.ordner, k.letzte_aenderung_ordner or "",
-          "ja" if k.letzte_aenderung_ordner and k.letzte_aenderung_ordner >= stichtag else "nein"]
-         for k in sorted(ohne_agb, key=lambda k: k.ordner)],
-    )
+        tabelle(wb.create_sheet("Nicht lesbar"), kopf, [z for z in zeilen if z[S] == STATUS_UNKLAR], status_spalte=S)
+    ohne_kopf = ["Kundenordner", "E-Mail", "Letzte Änderung im Ordner", "Im Prüfzeitraum", "Hinweis"]
+    ohne_zeilen = [[k.ordner, k.email, k.letzte_aenderung_ordner or "",
+                    "ja" if k.letzte_aenderung_ordner and k.letzte_aenderung_ordner >= stichtag else "nein",
+                    k.email_hinweis]
+                   for k in sorted(ohne_agb, key=lambda k: k.ordner)]
+    if not args.mit_email:
+        ohne_kopf = [ohne_kopf[0]] + ohne_kopf[2:4]
+        ohne_zeilen = [[z[0]] + z[2:4] for z in ohne_zeilen]
+    tabelle(wb.create_sheet("Ohne AGB"), ohne_kopf, ohne_zeilen)
     wb.save(pfad)
     return {"gesamt": len(kunden), "vor_stichtag": len(vor_stichtag), "ohne_agb": len(ohne_agb),
-            "geprueft": len(geprueft), **zaehler, "quote_neu": quote_neu, "quote_alt": quote_alt}
+            "geprueft": len(geprueft), **zaehler, "quote_neu": quote_neu, "quote_alt": quote_alt,
+            "mit_email": sum(1 for k in geprueft if k.email)}
 
 
 def main() -> int:
@@ -352,6 +416,8 @@ def main() -> int:
     p.add_argument("--ausgabe", default=None, help="Pfad der Excel-Datei (Default: output/AGB_Check_<datum_uhrzeit>.xlsx)")
     p.add_argument("--oeffnen", action="store_true", help="Excel-Datei nach dem Lauf direkt öffnen")
     p.add_argument("--threads", type=int, default=8, help="Parallele Downloads/Lesevorgänge (Default 8)")
+    p.add_argument("--ohne-email", dest="mit_email", action="store_false",
+                   help="Keine Kunden-E-Mails aus dem Auftrag auslesen (z. B. wenn nur die Quote gebraucht wird)")
     args = p.parse_args()
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -393,6 +459,12 @@ def main() -> int:
     print(f"{len(kunden)} Ordner gefunden, {len(zu_pruefen)} AGB-PDFs ab {args.stichtag:%d.%m.%Y} werden gelesen.", flush=True)
     pruefen(zu_pruefen, args.threads)
 
+    if args.mit_email:
+        # Nur für Kunden, die in der Excel auftauchen: geprüfte und Ordner ohne AGB.
+        relevant = [k for k in kunden if k.aktuelle_agb is None or k.aktuelle_agb.geaendert >= stichtag]
+        print(f"Lese E-Mail-Adressen aus {sum(1 for k in relevant if k.auftrag_pfad)} Aufträgen ...", flush=True)
+        emails_lesen(relevant, args.threads)
+
     r = excel_schreiben(ausgabe, kunden, args, neue)
     print()
     print(f"Ordner gesamt:            {r['gesamt']}")
@@ -403,6 +475,8 @@ def main() -> int:
     print(f"  alt:                    {r[STATUS_ALT]}")
     print(f"  nicht lesbar:           {r[STATUS_UNKLAR]}")
     print(f"Quote neu / alt:          {r['quote_neu']:.1%} / {r['quote_alt']:.1%}")
+    if args.mit_email:
+        print(f"E-Mail gefunden:          {r['mit_email']} von {r['geprueft']} geprüften Kunden")
     print(f"Excel: {os.path.abspath(ausgabe)}")
     if args.oeffnen and hasattr(os, "startfile"):
         os.startfile(os.path.abspath(ausgabe))

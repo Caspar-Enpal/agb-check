@@ -51,6 +51,9 @@ Optionen:
 | `--ausgabe` | `output/AGB_Check_<datum_uhrzeit>.xlsx` | Pfad der Excel-Datei |
 | `--oeffnen` | aus | Excel-Datei nach dem Lauf öffnen |
 | `--threads` | `8` | Parallele Downloads |
+| `--ohne-email` | aus | Keine Kunden-E-Mails auslesen, z. B. wenn nur die Quote gebraucht wird |
+
+**E-Mail-Adresse:** Für alle geprüften Kunden und für Ordner ohne AGB liest das Programm die Kunden-E-Mail aus `*_Auftrag_Stromtarif_Enpal.OnePlus.pdf`. Sie steht dort oben links auf Seite 1. Die Enpal-Adresse unten im Fuß wird ignoriert.
 
 Laufzeit: Beim ersten Lauf über den ganzen Batch (ca. 2.400 PDFs ab Stichtag) lädt OneDrive die PDFs herunter. Das dauert einige Minuten.
 
@@ -61,12 +64,12 @@ Kommt ein neuer AGB-Stand dazu, einfach `--neue-staende` erweitern.
 | Blatt | Inhalt |
 |---|---|
 | Übersicht | Zahlen, Quote, Verteilung der alten Stände |
-| Kunden geprüft | Alle Kunden ab Stichtag mit Upload-Datum, AGB-Stand, Status |
+| Kunden geprüft | Alle Kunden ab Stichtag mit E-Mail, Upload-Datum, AGB-Stand, Status |
 | Alte AGB | Nur die Kunden mit altem Stand |
 | Nicht lesbar | Nur vorhanden, wenn ein Stand nicht gelesen werden konnte |
-| Ohne AGB | Kundenordner ohne AGB_Stromtarif-Datei |
+| Ohne AGB | Kundenordner ohne AGB_Stromtarif-Datei, mit E-Mail |
 
 ## Hinweise
 
-- **Datenschutz:** Die Excel-Datei enthält Kundennamen (Ordnernamen). Sie darf nicht ins Repository und nur intern weitergegeben werden. `*.xlsx` und `output/` stehen deshalb in der `.gitignore`.
+- **Datenschutz:** Die Excel-Datei enthält Kundennamen (Ordnernamen) und E-Mail-Adressen. Sie darf nicht ins Repository, nur intern und nur für den Zweck der AGB-Prüfung bzw. -Korrektur genutzt werden. Nach Abschluss löschen, wenn sie nicht mehr gebraucht wird. `*.xlsx` und `output/` stehen deshalb in der `.gitignore`.
 - Bei „Dateien bei Bedarf“ lädt OneDrive die geprüften PDFs herunter. Danach kann man über Rechtsklick auf den Ordner → **Speicherplatz freigeben** wieder Platz schaffen.

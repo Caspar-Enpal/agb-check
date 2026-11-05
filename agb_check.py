@@ -37,6 +37,7 @@ import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from urllib.parse import unquote, urlparse
 
 import pymupdf
 from openpyxl import Workbook
@@ -93,24 +94,77 @@ def parse_datum(s: str) -> dt.date:
     raise argparse.ArgumentTypeError(f"Datum nicht erkannt: {s!r} (erwartet TT.MM.JJJJ)")
 
 
-def ordner_scannen(root: str) -> list[Kunde]:
-    kunden = []
-    with os.scandir(root) as it:
+def _sync_basisordner() -> list[str]:
+    """Ordner, unter denen OneDrive SharePoint-Bibliotheken synchronisiert (z. B. 'C:\\Users\\x\\Enpal B.V')."""
+    home = os.path.expanduser("~")
+    basen = []
+    with os.scandir(home) as it:
         for e in it:
-            if not e.is_dir():
-                continue
-            k = Kunde(ordner=e.name, pfad=e.path)
-            letzte = None
-            with os.scandir(e.path) as files:
-                for f in files:
-                    if not f.is_file():
-                        continue
-                    mtime = dt.datetime.fromtimestamp(f.stat().st_mtime)
-                    letzte = mtime if letzte is None or mtime > letzte else letzte
-                    if AGB_PATTERN.lower() in f.name.lower() and f.name.lower().endswith(".pdf"):
-                        k.agb_dateien.append(AgbDatei(pfad=f.path, name=f.name, geaendert=mtime))
-            k.letzte_aenderung_ordner = letzte
-            kunden.append(k)
+            if e.is_dir() and ("enpal" in e.name.lower() or e.name.lower().startswith("onedrive")):
+                basen.append(e.path)
+    return basen
+
+
+def sharepoint_link_aufloesen(link: str) -> str:
+    """Findet zu einem SharePoint-Ordnerlink den lokal synchronisierten Ordner.
+
+    Voraussetzung: Der Ordner (oder ein übergeordneter Ordner) ist per OneDrive
+    'Synchronisieren' bzw. 'Verknüpfung zu Meine Dateien hinzufügen' eingebunden.
+    """
+    pfad = urlparse(link).path
+    # Freigabelinks: /:f:/r/sites/<site>/<bibliothek>/<ordner>/...
+    pfad = re.sub(r"^/:[a-z]:/[a-z]/", "/", pfad)
+    segmente = [unquote(s) for s in pfad.split("/") if s]
+    if "sites" in segmente:
+        segmente = segmente[segmente.index("sites") + 2:]  # 'sites' und Site-Name weg
+    if not segmente:
+        raise ValueError(f"Kein Ordnerpfad im Link erkannt: {link}")
+
+    basen = _sync_basisordner()
+    # Vom tiefsten Segment nach oben suchen, welches lokal synchronisiert ist.
+    for i in range(len(segmente) - 1, -1, -1):
+        name = segmente[i]
+        for basis in basen:
+            with os.scandir(basis) as it:
+                for e in it:
+                    if e.is_dir() and (e.name == name or e.name.endswith(" - " + name)):
+                        ziel = os.path.join(e.path, *segmente[i + 1:])
+                        if os.path.isdir(ziel):
+                            return ziel
+    raise FileNotFoundError(
+        "Zu diesem SharePoint-Link wurde kein synchronisierter Ordner gefunden.\n"
+        "Bitte den Ordner in SharePoint öffnen und auf 'Synchronisieren' klicken, "
+        f"dann erneut starten. Gesuchte Ordnernamen: {', '.join(segmente)}\n"
+        f"Durchsuchte Orte: {', '.join(basen) or '(keine)'}"
+    )
+
+
+def ist_kundenordner(pfad: str) -> bool:
+    with os.scandir(pfad) as it:
+        return any(f.is_file() and AGB_PATTERN.lower() in f.name.lower() for f in it)
+
+
+def ordner_scannen(root: str) -> list[Kunde]:
+    # Zeigt der Link/Pfad direkt auf einen einzelnen Kundenordner, nur diesen prüfen.
+    if ist_kundenordner(root):
+        eintraege = [(os.path.basename(root.rstrip("\\/")), root)]
+    else:
+        with os.scandir(root) as it:
+            eintraege = [(e.name, e.path) for e in it if e.is_dir()]
+    kunden = []
+    for name, pfad in eintraege:
+        k = Kunde(ordner=name, pfad=pfad)
+        letzte = None
+        with os.scandir(pfad) as files:
+            for f in files:
+                if not f.is_file():
+                    continue
+                mtime = dt.datetime.fromtimestamp(f.stat().st_mtime)
+                letzte = mtime if letzte is None or mtime > letzte else letzte
+                if AGB_PATTERN.lower() in f.name.lower() and f.name.lower().endswith(".pdf"):
+                    k.agb_dateien.append(AgbDatei(pfad=f.path, name=f.name, geaendert=mtime))
+        k.letzte_aenderung_ordner = letzte
+        kunden.append(k)
     return kunden
 
 
@@ -283,20 +337,45 @@ def excel_schreiben(pfad: str, kunden: list[Kunde], args, neue: set[str]) -> dic
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Prüft den AGB-Stand (Stromtarif) in Enpal.One+ Kundenordnern.")
-    p.add_argument("--root", required=True, help="Synchronisierter SharePoint-Ordner mit den Kundenordnern")
+    p.add_argument("quelle", nargs="?", help="SharePoint-Ordnerlink ODER lokaler Pfad zum synchronisierten Ordner")
+    p.add_argument("--root", help="Wie 'quelle' (alternative Schreibweise)")
     p.add_argument("--stichtag", type=parse_datum, default=dt.date(2026, 5, 12),
                    help="Nur AGB-Dateien prüfen, die ab diesem Datum in SharePoint geändert wurden (Default 12.05.2026)")
     p.add_argument("--neue-staende", default="12.05.2026,31.07.2026",
                    help="Kommagetrennte AGB-Stände, die als 'neu' gelten (Default 12.05.2026,31.07.2026)")
-    p.add_argument("--ausgabe", default=None, help="Pfad der Excel-Datei (Default: AGB_Check_<datum>.xlsx im aktuellen Ordner)")
+    p.add_argument("--ausgabe", default=None, help="Pfad der Excel-Datei (Default: output/AGB_Check_<datum_uhrzeit>.xlsx)")
+    p.add_argument("--oeffnen", action="store_true", help="Excel-Datei nach dem Lauf direkt öffnen")
     p.add_argument("--threads", type=int, default=8, help="Parallele Downloads/Lesevorgänge (Default 8)")
     args = p.parse_args()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+
+    quelle = args.quelle or args.root
+    if not quelle:
+        p.error("Bitte einen SharePoint-Link oder lokalen Ordnerpfad angeben.")
+    if quelle.lower().startswith("http"):
+        try:
+            args.root = sharepoint_link_aufloesen(quelle)
+        except (FileNotFoundError, ValueError) as ex:
+            print(ex, file=sys.stderr)
+            return 1
+        print(f"SharePoint-Link -> lokaler Ordner: {args.root}")
+    else:
+        args.root = quelle
 
     if not os.path.isdir(args.root):
         print(f"Ordner nicht gefunden: {args.root}", file=sys.stderr)
         return 1
     neue = {parse_datum(s).strftime("%d.%m.%Y") for s in args.neue_staende.split(",") if s.strip()}
-    ausgabe = args.ausgabe or f"AGB_Check_{dt.date.today():%Y-%m-%d}.xlsx"
+    if args.ausgabe:
+        ausgabe = args.ausgabe
+    else:
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(out_dir, exist_ok=True)
+        ausgabe = os.path.join(out_dir, f"AGB_Check_{dt.datetime.now():%Y-%m-%d_%H%M}.xlsx")
 
     print("Scanne Kundenordner ...", flush=True)
     kunden = ordner_scannen(args.root)
@@ -319,6 +398,8 @@ def main() -> int:
     print(f"  nicht lesbar:           {r[STATUS_UNKLAR]}")
     print(f"Quote neu / alt:          {r['quote_neu']:.1%} / {r['quote_alt']:.1%}")
     print(f"Excel: {os.path.abspath(ausgabe)}")
+    if args.oeffnen and hasattr(os, "startfile"):
+        os.startfile(os.path.abspath(ausgabe))
     return 0
 
 

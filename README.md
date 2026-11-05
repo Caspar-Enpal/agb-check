@@ -18,18 +18,29 @@ Quote = neu / (neu + alt). Nicht lesbare Dateien fließen nicht in die Quote ein
 ## Einrichtung (einmalig)
 
 1. Python 3.11 oder neuer installieren.
-2. In SharePoint den Ordner `14_Vertragsunterlagen/01_Auftragsübersichten Enpal.One+` öffnen und auf **Synchronisieren** klicken. Er erscheint dann z. B. unter
+2. Repo klonen: `git clone https://github.com/Caspar-Enpal/agb-check.git`
+3. **Ordner synchronisieren:** In SharePoint den Ordner mit den Kundenordnern öffnen (z. B. `14_Vertragsunterlagen/01_Auftragsübersichten Enpal.One+`) und auf **Synchronisieren** klicken. OneDrive legt ihn dann lokal ab, z. B. unter
    `C:\Users\<name>\Enpal B.V\Venture Development - 01_Auftragsübersichten Enpal.One+`
-3. Abhängigkeiten installieren:
-   ```
-   py -m pip install --user -r requirements.txt
-   ```
+
+   Ohne diesen Schritt geht es nicht: Das Programm liest den lokal synchronisierten Ordner und greift nicht direkt auf SharePoint zu.
 
 ## Ausführen
 
+**Variante A, ohne Kommandozeile:** Doppelklick auf `AGB-Check starten.bat` und den SharePoint-Link einfügen. Das Skript installiert beim ersten Mal die Abhängigkeiten und öffnet am Ende die Excel-Datei.
+
+**Variante B, Kommandozeile:**
 ```
-py agb_check.py --root "C:\Users\<name>\Enpal B.V\Venture Development - 01_Auftragsübersichten Enpal.One+"
+py -m pip install --user -r requirements.txt
+py -P agb_check.py "<SharePoint-Link oder lokaler Ordnerpfad>" --oeffnen
 ```
+
+**Variante C, Claude Code:** Das Repo in Claude Code öffnen und den SharePoint-Link schicken. Die Anleitung für Claude steht in `CLAUDE.md`.
+
+Als Link funktionieren:
+- ein Batch-Ordner, z. B. `01_Auftragsübersichten Enpal.One+`. Dann werden alle Kundenordner darin geprüft.
+- ein einzelner Kundenordner (`<Datum>_<Name>_<Nr>`). Dann wird nur dieser Kunde geprüft.
+
+Der Ordner oder ein übergeordneter Ordner muss dafür synchronisiert sein.
 
 Optionen:
 
@@ -37,8 +48,11 @@ Optionen:
 |---|---|---|
 | `--stichtag` | `12.05.2026` | Nur AGB-Dateien prüfen, die ab diesem Datum hochgeladen wurden |
 | `--neue-staende` | `12.05.2026,31.07.2026` | AGB-Stände, die als „neu“ gelten |
-| `--ausgabe` | `AGB_Check_<heute>.xlsx` | Pfad der Excel-Datei |
+| `--ausgabe` | `output/AGB_Check_<datum_uhrzeit>.xlsx` | Pfad der Excel-Datei |
+| `--oeffnen` | aus | Excel-Datei nach dem Lauf öffnen |
 | `--threads` | `8` | Parallele Downloads |
+
+Laufzeit: Beim ersten Lauf über den ganzen Batch (ca. 2.400 PDFs ab Stichtag) lädt OneDrive die PDFs herunter. Das dauert einige Minuten.
 
 Kommt ein neuer AGB-Stand dazu, einfach `--neue-staende` erweitern.
 

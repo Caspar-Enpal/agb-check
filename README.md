@@ -4,7 +4,7 @@ Prüft für alle Kundenordner in „01_Auftragsübersichten Enpal.One+“, welch
 
 ## So funktioniert die Prüfung
 
-1. Jeder Unterordner ist ein Kunde.
+1. **Kundenordner werden in beliebiger Tiefe gefunden.** Ein Ordner gilt als Kunde, wenn direkt darin eine `AGB_Stromtarif`- oder `Auftrag_Stromtarif`-PDF liegt. Ordner dazwischen, z. B. für Monate oder Batches, werden einfach durchsucht. Unterordner eines Kunden, z. B. „Archiv“, zählen nicht als eigene Kunden. Ein Ordner ganz unten in der Struktur ohne diese PDFs landet im Blatt „Ohne AGB“. Schreibweisen wie `AGB-Stromtarif` oder `AGB Stromtarif` werden auch erkannt. In der Excel steht der Pfad relativ zum Startordner. Die Übersicht zeigt, auf welchen Ordnerebenen Kunden gefunden wurden.
 2. Maßgeblich ist das Datum, an dem die AGB-Datei **in SharePoint zuletzt geändert/hochgeladen** wurde. Das Datum im Ordnernamen wird nicht verwendet, weil es bei Upselling-Verträgen das Datum der Erstunterschrift ist.
 3. AGB-Dateien, die vor dem Stichtag hochgeladen wurden (Standard: **12.05.2026**), werden übersprungen.
 4. Bei allen anderen liest das Programm auf Seite 1 oben links den Text „Stand: TT.MM.JJJJ“.

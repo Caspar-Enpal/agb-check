@@ -30,8 +30,24 @@ Die Excel-Datei hat die Blätter „Übersicht“, „Kunden geprüft“, „Alt
 ## Wenn etwas nicht klappt
 
 - **„kein synchronisierter Ordner gefunden“:** Der User muss den Ordner in SharePoint öffnen und auf **Synchronisieren** klicken (oder einen übergeordneten Ordner), danach erneut starten. Es gibt keinen Zugriff über die SharePoint-API. Das Programm liest nur den lokal synchronisierten Ordner. Keine Umwege über Tokens, Browser-Cookies oder andere Zugänge bauen.
-- **Alle Ordner landen in „Ohne AGB“:** Der Ordner ist anders aufgebaut als erwartet (ein Unterordner pro Kunde mit den PDFs darin). Struktur prüfen, ohne Kundennamen auszugeben, z. B. nur Anzahl Ordner und Dateinamen-Muster, und den User fragen.
+- **Ordnerstruktur:** Das Programm sucht Kundenordner in beliebiger Tiefe. Kunde ist jeder Ordner, in dem direkt eine AGB- oder Auftrags-PDF liegt. Die Zeile „Kundenordner je Ebene“ in der Ausgabe zeigt, wo sie gefunden wurden. Verschachtelte Strukturen brauchen also keine Anpassung.
+- **Warnung „In keinem Ordner wurde eine AGB_Stromtarif- oder Auftrag_Stromtarif-PDF gefunden“ oder fast alles in „Ohne AGB“:** Die Dateien heißen anders, oder der Ordner ist nicht vollständig synchronisiert. Dateinamen-Muster prüfen, ohne Kundennamen auszugeben, z. B. mit `Get-ChildItem -Recurse -Filter *.pdf | Group-Object { $_.Name -replace '^DE\d+_','' }`, und dem User berichten. Erst nach Rücksprache `AGB_PATTERN` oder `AUFTRAG_PATTERN` in `agb_check.py` anpassen.
 - **Viele „nicht lesbar“:** Stichprobe ansehen, ob der Text „Stand: TT.MM.JJJJ“ anders formatiert ist oder die PDFs gescannt sind.
+
+## Rückfrage an Caspar (Owner des Repos)
+
+Caspar hat das Tool gebaut. Wenn ein Problem auftritt, das hier nicht beschrieben ist, oder fachlich etwas geändert werden müsste (Stichtag-Logik, neue AGB-Stände, andere Dateinamen, Code-Änderungen), dann **nicht selbst raten oder umbauen**, sondern:
+
+1. Kurz zum User sagen: „Moment, das muss ich einmal mit Caspar klären.“
+2. Eine fertige Nachricht an Caspar formulieren, die der User per Teams/Slack weiterleiten kann, in einem Codeblock:
+   - Was wurde ausgeführt (Befehl, Stichtag, Pfad **ohne** Kundennamen)
+   - Was ist passiert (Fehlermeldung bzw. Zahlen aus der Ausgabe)
+   - Die konkrete Frage an Caspar
+   - **Keine** Kundennamen, E-Mail-Adressen, Kunden-IDs oder PDF-Inhalte
+3. Wenn der User zustimmt und `gh` angemeldet ist und Zugriff aufs Repo hat, kann die Nachricht stattdessen als GitHub-Issue angelegt werden. Caspar wird dann automatisch benachrichtigt:
+   `gh issue create --repo Caspar-Enpal/agb-check --title "<kurz>" --body "<Nachricht>" --assignee Caspar-Enpal`
+   Auch hier keine Kundendaten. Issues können je nach Sichtbarkeit des Repos öffentlich sein.
+4. Danach auf Caspars Antwort warten und erst dann weitermachen.
 
 ## Fachliche Regeln (nur nach Rücksprache ändern)
 

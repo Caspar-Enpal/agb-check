@@ -151,40 +151,72 @@ def sharepoint_link_aufloesen(link: str) -> str:
     )
 
 
-def ist_kundenordner(pfad: str) -> bool:
-    with os.scandir(pfad) as it:
-        return any(f.is_file() and AGB_PATTERN.lower() in f.name.lower() for f in it)
+def _norm(name: str) -> str:
+    """'AGB-Stromtarif', 'AGB Stromtarif', 'agb_stromtarif' -> 'agb_stromtarif'."""
+    return re.sub(r"[\s\-.]+", "_", name.lower())
+
+
+def _dateityp(dateiname: str) -> str | None:
+    if not dateiname.lower().endswith(".pdf"):
+        return None
+    n = _norm(dateiname)
+    if _norm(AGB_PATTERN) in n:
+        return "agb"
+    if _norm(AUFTRAG_PATTERN) in n:
+        return "auftrag"
+    return None
 
 
 def ordner_scannen(root: str) -> list[Kunde]:
-    # Zeigt der Link/Pfad direkt auf einen einzelnen Kundenordner, nur diesen prüfen.
-    if ist_kundenordner(root):
-        eintraege = [(os.path.basename(root.rstrip("\\/")), root)]
-    else:
-        with os.scandir(root) as it:
-            eintraege = [(e.name, e.path) for e in it if e.is_dir()]
+    """Findet Kundenordner in beliebiger Tiefe.
+
+    Ein Ordner gilt als Kunde, wenn direkt darin eine AGB_Stromtarif- oder
+    Auftrag_Stromtarif-PDF liegt. Darunter wird nicht weiter gesucht.
+    Ein Ordner ganz unten in der Struktur (ohne Unterordner) ohne diese PDFs
+    gilt als Kunde ohne AGB. Ordner dazwischen (z. B. Monats- oder
+    Batch-Ordner) sind nur Sortierebenen und werden durchsucht.
+    Der Kundenname in der Excel ist der Pfad relativ zum Startordner.
+    """
+    root = os.path.abspath(root)
+    root_name = os.path.basename(root.rstrip("\\/"))
     kunden = []
-    for name, pfad in eintraege:
-        k = Kunde(ordner=name, pfad=pfad)
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        typen = {f: _dateityp(f) for f in filenames}
+        ist_kunde = any(typen.values())
+        ist_blatt = not dirnames and dirpath != root
+        if not ist_kunde and not ist_blatt:
+            continue
+        rel = os.path.relpath(dirpath, root)
+        k = Kunde(ordner=root_name if rel == "." else rel, pfad=dirpath)
         letzte = None
-        with os.scandir(pfad) as files:
-            for f in files:
-                if not f.is_file():
-                    continue
-                mtime = dt.datetime.fromtimestamp(f.stat().st_mtime)
-                letzte = mtime if letzte is None or mtime > letzte else letzte
-                name = f.name.lower()
-                if not name.endswith(".pdf"):
-                    continue
-                if AGB_PATTERN.lower() in name:
-                    k.agb_dateien.append(AgbDatei(pfad=f.path, name=f.name, geaendert=mtime))
-                elif AUFTRAG_PATTERN.lower() in name:
-                    # Bei mehreren Auftragsdateien zählt die zuletzt geänderte.
-                    if k.auftrag_geaendert is None or mtime > k.auftrag_geaendert:
-                        k.auftrag_pfad, k.auftrag_geaendert = f.path, mtime
+        for f in filenames:
+            pfad = os.path.join(dirpath, f)
+            try:
+                mtime = dt.datetime.fromtimestamp(os.stat(pfad).st_mtime)
+            except OSError:
+                continue
+            letzte = mtime if letzte is None or mtime > letzte else letzte
+            if typen[f] == "agb":
+                k.agb_dateien.append(AgbDatei(pfad=pfad, name=f, geaendert=mtime))
+            elif typen[f] == "auftrag":
+                # Bei mehreren Auftragsdateien zählt die zuletzt geänderte.
+                if k.auftrag_geaendert is None or mtime > k.auftrag_geaendert:
+                    k.auftrag_pfad, k.auftrag_geaendert = pfad, mtime
         k.letzte_aenderung_ordner = letzte
         kunden.append(k)
+        if ist_kunde:
+            dirnames[:] = []  # Unterordner eines Kunden nicht als eigene Kunden zählen
     return kunden
+
+
+def struktur_info(kunden: list[Kunde], root: str) -> dict[int, int]:
+    """Anzahl Kundenordner je Ordnerebene unter dem Startordner (für die Übersicht)."""
+    ebenen: dict[int, int] = {}
+    for k in kunden:
+        e = 0 if os.path.abspath(k.pfad) == os.path.abspath(root) else os.path.relpath(k.pfad, root).count(os.sep) + 1
+        ebenen[e] = ebenen.get(e, 0) + 1
+    return dict(sorted(ebenen.items()))
 
 
 def datei_lesen(pfad: str) -> bytes:
@@ -348,6 +380,7 @@ def excel_schreiben(pfad: str, kunden: list[Kunde], args, neue: set[str]) -> dic
         ("Als 'neu' gewertete AGB-Stände", ", ".join(sorted(neue))),
         ("", ""),
         ("Kundenordner gesamt", len(kunden)),
+        ("Kundenordner je Ordnerebene", ", ".join(f"Ebene {e}: {n}" for e, n in getattr(args, "struktur", {}).items())),
         ("davon AGB vor Stichtag hochgeladen (nicht geprüft)", len(vor_stichtag)),
         ("davon ohne AGB_Stromtarif-Datei", len(ohne_agb)),
         ("davon geprüft (AGB ab Stichtag)", len(geprueft)),
@@ -451,6 +484,11 @@ def main() -> int:
 
     print("Scanne Kundenordner ...", flush=True)
     kunden = ordner_scannen(args.root)
+    args.struktur = struktur_info(kunden, args.root)
+    print("Kundenordner je Ebene: " + ", ".join(f"Ebene {e}: {n}" for e, n in args.struktur.items()), flush=True)
+    if not any(k.agb_dateien or k.auftrag_pfad for k in kunden):
+        print("\nWARNUNG: In keinem Ordner wurde eine AGB_Stromtarif- oder Auftrag_Stromtarif-PDF gefunden.\n"
+              "Stimmt der Ordner? Ist er vollständig synchronisiert? Die Excel wird trotzdem erstellt.\n", flush=True)
     stichtag = dt.datetime.combine(args.stichtag, dt.time.min)
     zu_pruefen = [k.aktuelle_agb for k in kunden if k.aktuelle_agb and k.aktuelle_agb.geaendert >= stichtag]
     # Bei mehreren AGB-Dateien im Ordner auch die übrigen lesen (für die Spalte "Alle Stände").
